@@ -1,0 +1,21 @@
+## @file
+# List of Core Components.
+#
+# Copyright (c) 1985 - 2022, AMI. All rights reserved.<BR>
+# Subject to AMI licensing agreement.
+##
+
+  INF UsbNetworkPkg/NetworkCommon/NetworkCommon.inf
+
+!if gUsbNetworkPkgTokenSpaceGuid.UsbCdcEcmSupport
+  INF UsbNetworkPkg/UsbCdcEcm/UsbCdcEcm.inf
+!endif
+
+!if gUsbNetworkPkgTokenSpaceGuid.UsbCdcNcmSupport
+  INF UsbNetworkPkg/UsbCdcNcm/UsbCdcNcm.inf
+!endif
+
+!if gUsbNetworkPkgTokenSpaceGuid.UsbRndisSupport
+  INF UsbNetworkPkg/UsbRndis/UsbRndis.inf
+!endif
+
