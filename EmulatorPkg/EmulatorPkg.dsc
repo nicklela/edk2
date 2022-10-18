@@ -483,6 +483,24 @@
 !endif
 !include RedfishPkg/Redfish.dsc.inc
 
+UsbNetworkPkg/NetworkCommon/NetworkCommon.inf {
+  <LibraryClasses>
+    UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
+}
+
+UsbNetworkPkg/UsbCdcEcm/UsbCdcEcm.inf {
+  <LibraryClasses>
+    UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
+}
+UsbNetworkPkg/UsbCdcNcm/UsbCdcNcm.inf {
+  <LibraryClasses>
+    UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
+}
+UsbNetworkPkg/UsbRndis/UsbRndis.inf {
+  <LibraryClasses>
+    UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
+}
+
 [BuildOptions]
   #
   # Disable deprecated APIs.
