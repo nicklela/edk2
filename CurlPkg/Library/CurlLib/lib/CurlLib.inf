@@ -1,0 +1,148 @@
+#/** @file
+# Component description file for the socket library.
+#
+# This module implements the socket library.
+# Copyright (c) 2011, Intel Corporation
+#
+#  All rights reserved. This program and the accompanying materials
+#  are licensed and made available under the terms and conditions of the BSD License
+#  which accompanies this distribution. The full text of the license may be found at
+#  http://opensource.org/licenses/bsd-license.php
+#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+#
+#**/
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = CurlLib
+  FILE_GUID                      = 168C2AB7-BE97-41a8-B125-CFD9FB6539B7
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = CurlLib
+
+#
+#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
+#
+
+[Sources.common]
+    asyn-ares.c
+    asyn-thread.c
+    axtls.c
+    base64.c
+    bundles.c
+    conncache.c
+    connect.c
+    content_encoding.c
+    cookie.c
+    curl_addrinfo.c
+    curl_fnmatch.c
+    curl_gethostname.c
+    curl_memrchr.c
+    curl_ntlm.c
+    curl_ntlm_core.c
+    curl_ntlm_msgs.c
+    curl_ntlm_wb.c
+#    curl_rand.c
+    curl_rtmp.c
+    curl_sasl.c
+    curl_sspi.c
+    curl_threads.c
+    dict.c
+	dotdot.c
+    easy.c
+    escape.c
+    fileinfo.c
+    file.c
+    formdata.c
+    ftplistparser.c
+    ftp.c
+    getenv.c
+    getinfo.c
+    gopher.c
+    gtls.c
+    hash.c
+    hmac.c
+    hostasyn.c
+    hostip4.c
+    hostip6.c
+    hostip.c
+    hostsyn.c
+	hostcheck.c
+    http_chunks.c
+    http_digest.c
+    http_negotiate.c
+    http_negotiate_sspi.c
+    http.c
+    http_proxy.c
+    if2ip.c
+    imap.c
+    inet_ntop.c
+    inet_pton.c
+    ldap.c
+    llist.c
+    md4.c
+    md5.c
+    memdebug.c
+    mprintf.c
+    multi.c
+    netrc.c
+    nonblock.c
+    openldap.c
+    parsedate.c
+    pingpong.c
+	pipeline.c
+    polarssl.c
+    pop3.c
+    progress.c
+    rawstr.c
+    rtsp.c
+    select.c
+    sendf.c
+    share.c
+    slist.c
+    smtp.c
+    socks_gssapi.c
+    socks.c
+    socks_sspi.c
+    speedcheck.c
+    splay.c
+    ssh.c
+    sslgen.c
+    ssluse.c
+    strequal.c
+    strerror.c
+    strtok.c
+    strtoofft.c
+    telnet.c
+    tftp.c
+    timeval.c
+    transfer.c
+    url.c
+    version.c
+    warnless.c
+    wildcard.c
+
+[Packages]
+  CurlPkg/CurlPkg.dec
+  StdLib/StdLib.dec
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  LibC
+  LibStdio
+  BsdSocketLib
+  EfiSocketLib
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevUtility
+  UefiBootServicesTableLib
+  UefiLib
+
+[BuildOptions]
+   INTEL:*_*_*_CC_FLAGS = /Qdiag-disable:181,186
+   MSFT:*_*_*_CC_FLAGS = /Od /D_UEFI_ /DCURL_STATICLIB /DALLOW_MSVC6_WITHOUT_PSDK /wd4244
+   GCC:*_*_*_CC_FLAGS = -O0 -D_UEFI_ -Wno-error
+

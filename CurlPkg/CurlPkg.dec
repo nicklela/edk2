@@ -1,0 +1,13 @@
+[Defines]
+  DEC_SPECIFICATION              = 0x00010005
+  PACKAGE_NAME                   = CurlPkg
+  PACKAGE_GUID                   = 758FB62A-D6C8-44a5-B75D-93A2822FE9B5
+  PACKAGE_VERSION                = 0.01
+
+[Includes]
+  Library/CurlLib/include
+  ../../edk2-libc/StdLib/Include
+  ../../edk2-libc/StdLib/Include/X64
+
+[Protocols]
+
