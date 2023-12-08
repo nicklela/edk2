@@ -435,8 +435,8 @@ json_t *
 getUriFromServiceEx (
   redfishService        *service,
   const char            *uri,
-  EFI_HTTP_HEADER       **Headers OPTIONAL,
-  UINTN                 *HeaderCount OPTIONAL,
+  REDFISH_HTTP_HEADER   *RequestHeader OPTIONAL,
+  REDFISH_HTTP_HEADER   *ResponseHeader OPTIONAL,
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
@@ -448,18 +448,18 @@ getUriFromServiceEx (
   EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
   EFI_HTTP_MESSAGE       ResponseMsg;
   EFI_HTTP_HEADER        *ContentEncodedHeader;
+  UINTN                  Index, HeaderCount;
 
+  HeaderCount = 5;
+  
   if ((service == NULL) || (uri == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
   *StatusCode = NULL;
-  if (HeaderCount != NULL) {
-    *HeaderCount = 0;
-  }
-
-  if (Headers != NULL) {
-    *Headers = NULL;
+  if (ResponseHeader != NULL) {
+    ResponseHeader->HeaderCount = 0;
+    ResponseHeader->Headers = NULL;
   }
 
   url = makeUrlForService (service, uri);
@@ -472,7 +472,9 @@ getUriFromServiceEx (
   //
   // Step 1: Create HTTP request message with 4 headers:
   //
-  HttpIoHeader = HttpIoCreateHeader ((service->sessionToken || service->basicAuthStr) ? 6 : 5);
+  if (service->sessionToken || service->basicAuthStr) HeaderCount++;
+  if (RequestHeader->HeaderCount) HeaderCount += RequestHeader->HeaderCount;
+  HttpIoHeader = HttpIoCreateHeader (HeaderCount);
   if (HttpIoHeader == NULL) {
     ret = NULL;
     goto ON_EXIT;
@@ -483,6 +485,11 @@ getUriFromServiceEx (
     ASSERT_EFI_ERROR (Status);
   } else if (service->basicAuthStr) {
     Status = HttpIoSetHeader (HttpIoHeader, "Authorization", service->basicAuthStr);
+    ASSERT_EFI_ERROR (Status);
+  }
+
+  for (Index = 0; Index < RequestHeader->HeaderCount; Index++) {
+    Status = HttpIoSetHeader (HttpIoHeader, RequestHeader->Headers[Index].FieldName, RequestHeader->Headers[Index].FieldValue);
     ASSERT_EFI_ERROR (Status);
   }
 
@@ -566,8 +573,8 @@ getUriFromServiceEx (
     **StatusCode = ResponseMsg.Data.Response->StatusCode;
   }
 
-  if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
-    *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
+  if ((ResponseMsg.Headers != NULL) && (ResponseHeader != NULL)) {
+    ResponseHeader->Headers = cloneHttpHeaders (&ResponseMsg, &ResponseHeader->HeaderCount);
   }
 
   if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {

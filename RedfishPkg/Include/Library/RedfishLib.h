@@ -88,6 +88,12 @@ typedef  VOID  *REDFISH_PAYLOAD;
 /// Library class public structures/unions
 ///
 typedef struct {
+  UINTN                   HeaderCount;
+  EFI_HTTP_HEADER         *Headers;
+  CONST CHAR8             *Context;
+} REDFISH_REQUEST;
+
+typedef struct {
   EFI_HTTP_STATUS_CODE    *StatusCode;
   UINTN                   HeaderCount;
   EFI_HTTP_HEADER         *Headers;
@@ -286,6 +292,38 @@ EFIAPI
 RedfishGetByUri (
   IN     REDFISH_SERVICE   RedfishService,
   IN     CONST CHAR8       *Uri,
+  OUT    REDFISH_RESPONSE  *RedResponse
+  );
+
+/**
+  Get a redfish response addressed by URI and HTTP headers, including HTTP StatusCode, Headers
+  and Payload which record any HTTP response messages.
+
+  Callers are responsible for freeing the HTTP StatusCode, Headers and Payload returned in
+  redfish response data.
+
+  @param[in]    RedfishService    The Service to access the URI resources.
+  @param[in]    URI               String to address a resource.
+  @param[in]    RedRequest        Pointer to the Redfish request data.
+  @param[out]   RedResponse       Pointer to the Redfish response data.
+
+  @retval EFI_SUCCESS             The operation is successful, indicates the HTTP StatusCode is not
+                                  NULL and the value is 2XX. The corresponding redfish resource has
+                                  been returned in Payload within RedResponse.
+  @retval EFI_INVALID_PARAMETER   RedfishService, RedPath, or RedResponse is NULL.
+  @retval EFI_DEVICE_ERROR        An unexpected system or network error occurred. Callers can get
+                                  more error info from returned HTTP StatusCode, Headers and Payload
+                                  within RedResponse:
+                                  1. If the returned Payload is NULL, indicates any error happen.
+                                  2. If the returned StatusCode is NULL, indicates any error happen.
+                                  3. If the returned StatusCode is not 2XX, indicates any error happen.
+**/
+EFI_STATUS
+EFIAPI
+RedfishGetByUriEx (
+  IN     REDFISH_SERVICE   RedfishService,
+  IN     CONST CHAR8       *Uri,
+  IN     REDFISH_REQUEST   *RedRequest,
   OUT    REDFISH_RESPONSE  *RedResponse
   );
 

@@ -348,15 +348,96 @@ RedfishGetByUri (
   OUT    REDFISH_RESPONSE  *RedResponse
   )
 {
-  EDKII_JSON_VALUE  JsonValue;
+  EDKII_JSON_VALUE    JsonValue;
+  REDFISH_HTTP_HEADER RespHeaders;
 
   if ((RedfishService == NULL) || (Uri == NULL) || (RedResponse == NULL)) {
     return EFI_INVALID_PARAMETER;
   }
 
   ZeroMem (RedResponse, sizeof (REDFISH_RESPONSE));
+  ZeroMem (&RespHeaders, sizeof (REDFISH_HTTP_HEADER));
 
-  JsonValue            = getUriFromServiceEx (RedfishService, Uri, &RedResponse->Headers, &RedResponse->HeaderCount, &RedResponse->StatusCode);
+  JsonValue = getUriFromServiceEx (RedfishService, Uri, NULL, &RespHeaders, &RedResponse->StatusCode);
+  if(RespHeaders.HeaderCount > 0) {
+    RedResponse->HeaderCount  = RespHeaders.HeaderCount;
+    RedResponse->Headers      = RespHeaders.Headers;
+  }
+  RedResponse->Payload      = createRedfishPayload (JsonValue, RedfishService);
+
+  //
+  // 1. If the returned Payload is NULL, indicates any error happen.
+  // 2. If the returned StatusCode is NULL, indicates any error happen.
+  //
+  if ((RedResponse->Payload == NULL) || (RedResponse->StatusCode == NULL)) {
+    return EFI_DEVICE_ERROR;
+  }
+
+  //
+  // 3. If the returned StatusCode is not 2XX, indicates any error happen.
+  //    NOTE: If there is any error message returned from server, it will be returned in
+  //          Payload within RedResponse.
+  //
+  if ((*(RedResponse->StatusCode) < HTTP_STATUS_200_OK) || \
+      (*(RedResponse->StatusCode) > HTTP_STATUS_206_PARTIAL_CONTENT))
+  {
+    return EFI_DEVICE_ERROR;
+  }
+
+  return EFI_SUCCESS;
+}
+
+/**
+  Get a redfish response addressed by URI and HTTP headers, including HTTP StatusCode, Headers
+  and Payload which record any HTTP response messages.
+
+  Callers are responsible for freeing the HTTP StatusCode, Headers and Payload returned in
+  redfish response data.
+
+  @param[in]    RedfishService    The Service to access the URI resources.
+  @param[in]    URI               String to address a resource.
+  @param[in]    RedRequest        Pointer to the Redfish request data.
+  @param[out]   RedResponse       Pointer to the Redfish response data.
+
+  @retval EFI_SUCCESS             The operation is successful, indicates the HTTP StatusCode is not
+                                  NULL and the value is 2XX. The corresponding redfish resource has
+                                  been returned in Payload within RedResponse.
+  @retval EFI_INVALID_PARAMETER   RedfishService, RedPath, or RedResponse is NULL.
+  @retval EFI_DEVICE_ERROR        An unexpected system or network error occurred. Callers can get
+                                  more error info from returned HTTP StatusCode, Headers and Payload
+                                  within RedResponse:
+                                  1. If the returned Payload is NULL, indicates any error happen.
+                                  2. If the returned StatusCode is NULL, indicates any error happen.
+                                  3. If the returned StatusCode is not 2XX, indicates any error happen.
+**/
+EFI_STATUS
+EFIAPI
+RedfishGetByUriEx (
+  IN     REDFISH_SERVICE   RedfishService,
+  IN     CONST CHAR8       *Uri,
+  IN     REDFISH_REQUEST   *RedRequest,
+  OUT    REDFISH_RESPONSE  *RedResponse
+  )
+{
+  EDKII_JSON_VALUE  JsonValue;
+  REDFISH_HTTP_HEADER ReqHeaders;
+  REDFISH_HTTP_HEADER RespHeaders;
+
+  if ((RedfishService == NULL) || (Uri == NULL) || (RedResponse == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem (RedResponse, sizeof (REDFISH_RESPONSE));
+  ZeroMem (&RespHeaders, sizeof (REDFISH_HTTP_HEADER));
+
+  ReqHeaders.HeaderCount = RedRequest->HeaderCount;
+  ReqHeaders.Headers = RedRequest->Headers;
+
+  JsonValue            = getUriFromServiceEx (RedfishService, Uri, &ReqHeaders, &RespHeaders, &RedResponse->StatusCode);
+  if(RespHeaders.HeaderCount > 0) {
+    RedResponse->HeaderCount  = RespHeaders.HeaderCount;
+    RedResponse->Headers      = RespHeaders.Headers;
+  }
   RedResponse->Payload = createRedfishPayload (JsonValue, RedfishService);
 
   //

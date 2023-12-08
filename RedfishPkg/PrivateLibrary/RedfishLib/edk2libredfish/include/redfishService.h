@@ -88,6 +88,11 @@ typedef struct {
   } authCodes;
 } enumeratorAuthentication;
 
+typedef struct {
+  UINTN                   HeaderCount;
+  EFI_HTTP_HEADER         *Headers;
+} REDFISH_HTTP_HEADER;
+
 // Values for flags
 #define REDFISH_FLAG_SERVICE_NO_VERSION_DOC  0x00000001// The Redfish Service lacks the version document (in violation of the Redfish spec)
 redfishService *
@@ -109,8 +114,8 @@ json_t *
 getUriFromServiceEx (
   redfishService        *service,
   const char            *uri,
-  EFI_HTTP_HEADER       **Headers,
-  UINTN                 *HeaderCount,
+  REDFISH_HTTP_HEADER   *RequestHeader OPTIONAL,
+  REDFISH_HTTP_HEADER   *ResponseHeader OPTIONAL,
   EFI_HTTP_STATUS_CODE  **StatusCode
   );
 
