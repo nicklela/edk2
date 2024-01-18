@@ -451,7 +451,7 @@ getUriFromServiceEx (
   UINTN                  Index, HeaderCount;
 
   HeaderCount = 5;
-  
+
   if ((service == NULL) || (uri == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
@@ -459,7 +459,7 @@ getUriFromServiceEx (
   *StatusCode = NULL;
   if (ResponseHeader != NULL) {
     ResponseHeader->HeaderCount = 0;
-    ResponseHeader->Headers = NULL;
+    ResponseHeader->Headers     = NULL;
   }
 
   url = makeUrlForService (service, uri);
@@ -470,10 +470,16 @@ getUriFromServiceEx (
   DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
 
   //
-  // Step 1: Create HTTP request message with 4 headers:
+  // Step 1: Create HTTP request message:
   //
-  if (service->sessionToken || service->basicAuthStr) HeaderCount++;
-  if (RequestHeader->HeaderCount) HeaderCount += RequestHeader->HeaderCount;
+  if (service->sessionToken || service->basicAuthStr) {
+    HeaderCount++;
+  }
+
+  if (RequestHeader->HeaderCount) {
+    HeaderCount += RequestHeader->HeaderCount;
+  }
+
   HttpIoHeader = HttpIoCreateHeader (HeaderCount);
   if (HttpIoHeader == NULL) {
     ret = NULL;
@@ -672,7 +678,7 @@ putUriFromServiceEx (
   }
 
   //
-  // Step 1: Create HTTP request message with 4 headers:
+  // Step 1: Create HTTP request message:
   //
   HttpIoHeader = HttpIoCreateHeader ((service->sessionToken != NULL || service->basicAuthStr != NULL) ? 9 : 8);
   if (HttpIoHeader == NULL) {
@@ -697,8 +703,6 @@ putUriFromServiceEx (
   }
 
   Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
   ASSERT_EFI_ERROR (Status);
   Status = HttpIoSetHeader (HttpIoHeader, "Accept", "application/json");
   ASSERT_EFI_ERROR (Status);
@@ -835,6 +839,8 @@ patchUriFromServiceEx (
   redfishService        *service,
   const char            *uri,
   const char            *content,
+  size_t                contentLength OPTIONAL,
+  const char            *contentType OPTIONAL,
   EFI_HTTP_HEADER       **Headers OPTIONAL,
   UINTN                 *HeaderCount OPTIONAL,
   EFI_HTTP_STATUS_CODE  **StatusCode
@@ -869,10 +875,14 @@ patchUriFromServiceEx (
     return NULL;
   }
 
+  if (contentLength == 0) {
+    contentLength = strlen (content);
+  }
+
   DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
 
   //
-  // Step 1: Create HTTP request message with 4 headers:
+  // Step 1: Create HTTP request message:
   //
   HttpIoHeader = HttpIoCreateHeader ((service->sessionToken || service->basicAuthStr) ? 9 : 8);
   if (HttpIoHeader == NULL) {
@@ -888,9 +898,15 @@ patchUriFromServiceEx (
     ASSERT_EFI_ERROR (Status);
   }
 
+  if (contentType == NULL) {
+    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
+    ASSERT_EFI_ERROR (Status);
+  } else {
+    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", (CHAR8 *)contentType);
+    ASSERT_EFI_ERROR (Status);
+  }
+
   Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
   ASSERT_EFI_ERROR (Status);
   Status = HttpIoSetHeader (HttpIoHeader, "Accept", "application/json");
   ASSERT_EFI_ERROR (Status);
@@ -1043,6 +1059,8 @@ postUriFromServiceEx (
   EFI_HTTP_MESSAGE       ResponseMsg;
   CHAR8                  ContentLengthStr[80];
   EFI_HTTP_HEADER        *HttpHeader = NULL;
+  CHAR8                  *EncodedContent;
+  UINTN                  EncodedContentLen;
 
   ret = NULL;
 
@@ -1071,7 +1089,7 @@ postUriFromServiceEx (
   }
 
   //
-  // Step 1: Create HTTP request message with 4 headers:
+  // Step 1: Create HTTP request message:
   //
   HttpIoHeader = HttpIoCreateHeader ((service->sessionToken || service->basicAuthStr) ? 8 : 7);
   if (HttpIoHeader == NULL) {
@@ -1132,11 +1150,30 @@ postUriFromServiceEx (
     goto ON_EXIT;
   }
 
+  EncodedContent    = (CHAR8 *)content;
+  EncodedContentLen = strlen (content);
+  //
+  // We currently only support gzip Content-Encoding.
+  //
+  Status = EncodeRequestContent ((CHAR8 *)HTTP_CONTENT_ENCODING_GZIP, (CHAR8 *)content, (VOID **)&EncodedContent, &EncodedContentLen);
+  if (Status == EFI_INVALID_PARAMETER) {
+    DEBUG ((DEBUG_ERROR, "%a: Error to encode content.\n", __func__));
+    ret = NULL;
+    goto ON_EXIT;
+  } else if (Status == EFI_UNSUPPORTED) {
+    DEBUG ((DEBUG_MANAGEABILITY, "No content coding for %a! Use raw data instead.\n", HTTP_CONTENT_ENCODING_GZIP));
+    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_IDENTITY);
+    ASSERT_EFI_ERROR (Status);
+  } else {
+    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_GZIP);
+    ASSERT_EFI_ERROR (Status);
+  }
+
   RequestMsg->Data.Request = RequestData;
   RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
   RequestMsg->Headers      = HttpIoHeader->Headers;
-  RequestMsg->BodyLength   = contentLength;
-  RequestMsg->Body         = (VOID *)content;
+  RequestMsg->BodyLength   = EncodedContentLen;
+  RequestMsg->Body         = (VOID *)EncodedContent;
 
   ZeroMem (&ResponseMsg, sizeof (ResponseMsg));
 
@@ -1170,6 +1207,10 @@ postUriFromServiceEx (
 
   if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
     *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
+  }
+
+  if (EncodedContent != content) {
+    FreePool (EncodedContent);
   }
 
   if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
@@ -1233,7 +1274,7 @@ patchUriFromService (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  return patchUriFromServiceEx (service, uri, content, NULL, NULL, StatusCode);
+  return patchUriFromServiceEx (service, uri, content, 0, NULL, NULL, NULL, StatusCode);
 }
 
 json_t *
@@ -1253,7 +1294,11 @@ json_t *
 deleteUriFromServiceEx (
   redfishService        *service,
   const char            *uri,
-  const char            *content,
+  const char            *content OPTIONAL,
+  size_t                contentLength OPTIONAL,
+  const char            *contentType OPTIONAL,
+  EFI_HTTP_HEADER       **Headers OPTIONAL,
+  UINTN                 *HeaderCount OPTIONAL,
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
@@ -1265,27 +1310,44 @@ deleteUriFromServiceEx (
   EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
   EFI_HTTP_MESSAGE       ResponseMsg;
   CHAR8                  ContentLengthStr[80];
-  size_t                 contentLength;
+  UINTN                  Count;
 
-  ret = NULL;
+  ret   = NULL;
+  Count = 0;
 
   if ((service == NULL) || (uri == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
   *StatusCode = NULL;
+  if (HeaderCount != NULL) {
+    *HeaderCount = 0;
+  }
+
+  if (Headers != NULL) {
+    *Headers = NULL;
+  }
 
   url = makeUrlForService (service, uri);
   if (!url) {
     return NULL;
   }
 
-  DEBUG ((DEBUG_MANAGEABILITY, "libredfish: deleteUriFromService(): %a\n", url));
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
 
   //
-  // Step 1: Create HTTP request message with 4 headers:
+  // Step 1: Create HTTP request message:
   //
-  HttpIoHeader = HttpIoCreateHeader ((service->sessionToken || service->basicAuthStr) ? 8 : 7);
+  Count = 4;
+  if (((service->sessionToken != NULL) || (service->basicAuthStr != NULL))) {
+    Count += 1;
+  }
+
+  if (content != NULL) {
+    Count += 2;
+  }
+
+  HttpIoHeader = HttpIoCreateHeader (Count);
   if (HttpIoHeader == NULL) {
     ret = NULL;
     goto ON_EXIT;
@@ -1299,20 +1361,26 @@ deleteUriFromServiceEx (
     ASSERT_EFI_ERROR (Status);
   }
 
+  if (contentType == NULL) {
+    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
+    ASSERT_EFI_ERROR (Status);
+  } else {
+    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", (CHAR8 *)contentType);
+    ASSERT_EFI_ERROR (Status);
+  }
+
   Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
   ASSERT_EFI_ERROR (Status);
   Status = HttpIoSetHeader (HttpIoHeader, "User-Agent", "libredfish");
   ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
-  ASSERT_EFI_ERROR (Status);
   Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
   ASSERT_EFI_ERROR (Status);
 
-  Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
-  ASSERT_EFI_ERROR (Status);
-
   if (content != NULL) {
-    contentLength = strlen (content);
+    if (contentLength == 0) {
+      contentLength = strlen (content);
+    }
+
     AsciiSPrint (
       ContentLengthStr,
       sizeof (ContentLengthStr),
@@ -1382,6 +1450,10 @@ deleteUriFromServiceEx (
     **StatusCode = ResponseMsg.Data.Response->StatusCode;
   }
 
+  if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
+    *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
+  }
+
   if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
     ret = json_loadb (ResponseMsg.Body, ResponseMsg.BodyLength, 0, NULL);
   }
@@ -1415,7 +1487,7 @@ deleteUriFromService (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  return deleteUriFromServiceEx (service, uri, NULL, StatusCode);
+  return deleteUriFromServiceEx (service, uri, NULL, 0, NULL, NULL, NULL, StatusCode);
 }
 
 redfishPayload *

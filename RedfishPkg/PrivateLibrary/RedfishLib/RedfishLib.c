@@ -348,43 +348,10 @@ RedfishGetByUri (
   OUT    REDFISH_RESPONSE  *RedResponse
   )
 {
-  EDKII_JSON_VALUE    JsonValue;
-  REDFISH_HTTP_HEADER RespHeaders;
+  REDFISH_REQUEST  Request;
 
-  if ((RedfishService == NULL) || (Uri == NULL) || (RedResponse == NULL)) {
-    return EFI_INVALID_PARAMETER;
-  }
-
-  ZeroMem (RedResponse, sizeof (REDFISH_RESPONSE));
-  ZeroMem (&RespHeaders, sizeof (REDFISH_HTTP_HEADER));
-
-  JsonValue = getUriFromServiceEx (RedfishService, Uri, NULL, &RespHeaders, &RedResponse->StatusCode);
-  if(RespHeaders.HeaderCount > 0) {
-    RedResponse->HeaderCount  = RespHeaders.HeaderCount;
-    RedResponse->Headers      = RespHeaders.Headers;
-  }
-  RedResponse->Payload      = createRedfishPayload (JsonValue, RedfishService);
-
-  //
-  // 1. If the returned Payload is NULL, indicates any error happen.
-  // 2. If the returned StatusCode is NULL, indicates any error happen.
-  //
-  if ((RedResponse->Payload == NULL) || (RedResponse->StatusCode == NULL)) {
-    return EFI_DEVICE_ERROR;
-  }
-
-  //
-  // 3. If the returned StatusCode is not 2XX, indicates any error happen.
-  //    NOTE: If there is any error message returned from server, it will be returned in
-  //          Payload within RedResponse.
-  //
-  if ((*(RedResponse->StatusCode) < HTTP_STATUS_200_OK) || \
-      (*(RedResponse->StatusCode) > HTTP_STATUS_206_PARTIAL_CONTENT))
-  {
-    return EFI_DEVICE_ERROR;
-  }
-
-  return EFI_SUCCESS;
+  ZeroMem (&Request, sizeof (Request));
+  return RedfishGetByUriEx (RedfishService, Uri, &Request, RedResponse);
 }
 
 /**
@@ -419,9 +386,9 @@ RedfishGetByUriEx (
   OUT    REDFISH_RESPONSE  *RedResponse
   )
 {
-  EDKII_JSON_VALUE  JsonValue;
-  REDFISH_HTTP_HEADER ReqHeaders;
-  REDFISH_HTTP_HEADER RespHeaders;
+  EDKII_JSON_VALUE     JsonValue;
+  REDFISH_HTTP_HEADER  ReqHeaders;
+  REDFISH_HTTP_HEADER  RespHeaders;
 
   if ((RedfishService == NULL) || (Uri == NULL) || (RedResponse == NULL)) {
     return EFI_INVALID_PARAMETER;
@@ -431,13 +398,14 @@ RedfishGetByUriEx (
   ZeroMem (&RespHeaders, sizeof (REDFISH_HTTP_HEADER));
 
   ReqHeaders.HeaderCount = RedRequest->HeaderCount;
-  ReqHeaders.Headers = RedRequest->Headers;
+  ReqHeaders.Headers     = RedRequest->Headers;
 
-  JsonValue            = getUriFromServiceEx (RedfishService, Uri, &ReqHeaders, &RespHeaders, &RedResponse->StatusCode);
-  if(RespHeaders.HeaderCount > 0) {
-    RedResponse->HeaderCount  = RespHeaders.HeaderCount;
-    RedResponse->Headers      = RespHeaders.Headers;
+  JsonValue = getUriFromServiceEx (RedfishService, Uri, &ReqHeaders, &RespHeaders, &RedResponse->StatusCode);
+  if (RespHeaders.HeaderCount > 0) {
+    RedResponse->HeaderCount = RespHeaders.HeaderCount;
+    RedResponse->Headers     = RespHeaders.Headers;
   }
+
   RedResponse->Payload = createRedfishPayload (JsonValue, RedfishService);
 
   //
@@ -567,6 +535,52 @@ RedfishPatchToUri (
   OUT    REDFISH_RESPONSE  *RedResponse
   )
 {
+  return RedfishPatchToUriEx (RedfishService, Uri, Content, 0, NULL, RedResponse);
+}
+
+/**
+  Use HTTP PATCH to perform updates on pre-existing Redfish resource.
+
+  This function uses the RedfishService to patch a Redfish resource addressed by
+  Uri (only the relative path is required). Changes to one or more properties within
+  the target resource are represented in the input Content, properties not specified
+  in Content won't be changed by this request. The corresponding redfish response will
+  returned, including HTTP StatusCode, Headers and Payload which record any HTTP response
+  messages.
+
+  Callers are responsible for freeing the HTTP StatusCode, Headers and Payload returned in
+  redfish response data.
+
+  @param[in]    RedfishService        The Service to access the Redfish resources.
+  @param[in]    Uri                   Relative path to address the resource.
+  @param[in]    Content               JSON represented properties to be update.
+  @param[in]    ContentSize           Size of the Content to be send to Redfish service. This is optional.
+  @param[in]    ContentType           Type of the Content to be send to Redfish service. This is optional.
+  @param[out]   RedResponse           Pointer to the Redfish response data.
+
+  @retval EFI_SUCCESS             The operation is successful, indicates the HTTP StatusCode is not
+                                  NULL and the value is 2XX. The Redfish resource will be returned
+                                  in Payload within RedResponse if server send it back in the HTTP
+                                  response message body.
+  @retval EFI_INVALID_PARAMETER   RedfishService, Uri, Content, or RedResponse is NULL.
+  @retval EFI_DEVICE_ERROR        An unexpected system or network error occurred. Callers can get
+                                  more error info from returned HTTP StatusCode, Headers and Payload
+                                  within RedResponse:
+                                  1. If the returned StatusCode is NULL, indicates any error happen.
+                                  2. If the returned StatusCode is not NULL and the value is not 2XX,
+                                     indicates any error happen.
+**/
+EFI_STATUS
+EFIAPI
+RedfishPatchToUriEx (
+  IN     REDFISH_SERVICE   RedfishService,
+  IN     CONST CHAR8       *Uri,
+  IN     CONST CHAR8       *Content,
+  IN     UINTN             ContentSize OPTIONAL,
+  IN     CONST CHAR8       *ContentType OPTIONAL,
+  OUT    REDFISH_RESPONSE  *RedResponse
+  )
+{
   EFI_STATUS        Status;
   EDKII_JSON_VALUE  JsonValue;
 
@@ -583,6 +597,8 @@ RedfishPatchToUri (
                                   RedfishService,
                                   Uri,
                                   Content,
+                                  ContentSize,
+                                  ContentType,
                                   &(RedResponse->Headers),
                                   &(RedResponse->HeaderCount),
                                   &(RedResponse->StatusCode)
@@ -892,56 +908,7 @@ RedfishDeleteByUri (
   OUT    REDFISH_RESPONSE  *RedResponse
   )
 {
-  EFI_STATUS        Status;
-  EDKII_JSON_VALUE  JsonValue;
-
-  Status    = EFI_SUCCESS;
-  JsonValue = NULL;
-
-  if ((RedfishService == NULL) || (Uri == NULL) || (RedResponse == NULL)) {
-    return EFI_INVALID_PARAMETER;
-  }
-
-  ZeroMem (RedResponse, sizeof (REDFISH_RESPONSE));
-
-  JsonValue = (EDKII_JSON_VALUE)deleteUriFromService (
-                                  RedfishService,
-                                  Uri,
-                                  &(RedResponse->StatusCode)
-                                  );
-
-  //
-  // 1. If the returned StatusCode is NULL, indicates any error happen.
-  //
-  if (RedResponse->StatusCode == NULL) {
-    Status = EFI_DEVICE_ERROR;
-    goto ON_EXIT;
-  }
-
-  //
-  // 2. If the returned StatusCode is not NULL and the value is not 2XX, indicates any error happen.
-  //    NOTE: If there is any error message returned from server, it will be returned in
-  //          Payload within RedResponse.
-  //
-  if ((*(RedResponse->StatusCode) < HTTP_STATUS_200_OK) || \
-      (*(RedResponse->StatusCode) > HTTP_STATUS_206_PARTIAL_CONTENT))
-  {
-    Status = EFI_DEVICE_ERROR;
-  }
-
-ON_EXIT:
-  if (JsonValue != NULL) {
-    RedResponse->Payload = createRedfishPayload (JsonValue, RedfishService);
-    if (RedResponse->Payload == NULL) {
-      //
-      // Ignore the error when create RedfishPayload, just free the JsonValue since it's not what
-      // we care about if the returned StatusCode is 2XX.
-      //
-      JsonValueFree (JsonValue);
-    }
-  }
-
-  return Status;
+  return RedfishDeleteByUriEx2 (RedfishService, Uri, NULL, 0, NULL, RedResponse);
 }
 
 /**
@@ -981,6 +948,50 @@ RedfishDeleteByUriEx (
   OUT    REDFISH_RESPONSE  *RedResponse
   )
 {
+  return RedfishDeleteByUriEx2 (RedfishService, Uri, Content, 0, NULL, RedResponse);
+}
+
+/**
+  Use HTTP DELETE to remove a resource.
+
+  This function uses the RedfishService to remove a Redfish resource which is addressed
+  by input Uri (only the relative path is required). The corresponding redfish response will
+  returned, including HTTP StatusCode, Headers and Payload which record any HTTP response
+  messages.
+
+  Callers are responsible for freeing the HTTP StatusCode, Headers and Payload returned in
+  redfish response data.
+
+  @param[in]    RedfishService        The Service to access the Redfish resources.
+  @param[in]    Uri                   Relative path to address the resource.
+  @param[in]    Content               JSON represented properties to be deleted. This is optional.
+  @param[in]    ContentSize           Size of the Content to be send to Redfish service. This is optional.
+  @param[in]    ContentType           Type of the Content to be send to Redfish service. THis is optional.
+  @param[out]   RedResponse           Pointer to the Redfish response data.
+
+  @retval EFI_SUCCESS             The operation is successful, indicates the HTTP StatusCode is not
+                                  NULL and the value is 2XX, the Redfish resource has been removed.
+                                  If there is any message returned from server, it will be returned
+                                  in Payload within RedResponse.
+  @retval EFI_INVALID_PARAMETER   RedfishService, Uri, or RedResponse is NULL.
+  @retval EFI_DEVICE_ERROR        An unexpected system or network error occurred. Callers can get
+                                  more error info from returned HTTP StatusCode, Headers and Payload
+                                  within RedResponse:
+                                  1. If the returned StatusCode is NULL, indicates any error happen.
+                                  2. If the returned StatusCode is not NULL and the value is not 2XX,
+                                     indicates any error happen.
+**/
+EFI_STATUS
+EFIAPI
+RedfishDeleteByUriEx2 (
+  IN     REDFISH_SERVICE   RedfishService,
+  IN     CONST CHAR8       *Uri,
+  IN     CONST CHAR8       *Content OPTIONAL,
+  IN     UINTN             ContentSize OPTIONAL,
+  IN     CONST CHAR8       *ContentType OPTIONAL,
+  OUT    REDFISH_RESPONSE  *RedResponse
+  )
+{
   EFI_STATUS        Status;
   EDKII_JSON_VALUE  JsonValue;
 
@@ -997,6 +1008,10 @@ RedfishDeleteByUriEx (
                                   RedfishService,
                                   Uri,
                                   Content,
+                                  ContentSize,
+                                  ContentType,
+                                  &(RedResponse->Headers),
+                                  &(RedResponse->HeaderCount),
                                   &(RedResponse->StatusCode)
                                   );
 

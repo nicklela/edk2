@@ -89,8 +89,8 @@ typedef struct {
 } enumeratorAuthentication;
 
 typedef struct {
-  UINTN                   HeaderCount;
-  EFI_HTTP_HEADER         *Headers;
+  UINTN              HeaderCount;
+  EFI_HTTP_HEADER    *Headers;
 } REDFISH_HTTP_HEADER;
 
 // Values for flags
@@ -132,6 +132,8 @@ patchUriFromServiceEx (
   redfishService        *service,
   const char            *uri,
   const char            *content,
+  size_t                contentLength,
+  const char            *contentType,
   EFI_HTTP_HEADER       **Headers,
   UINTN                 *HeaderCount,
   EFI_HTTP_STATUS_CODE  **StatusCode
@@ -182,7 +184,11 @@ json_t *
 deleteUriFromServiceEx (
   redfishService        *service,
   const char            *uri,
-  const char            *content,
+  const char            *content OPTIONAL,
+  size_t                contentLength OPTIONAL,
+  const char            *contentType OPTIONAL,
+  EFI_HTTP_HEADER       **Headers OPTIONAL,
+  UINTN                 *HeaderCount OPTIONAL,
   EFI_HTTP_STATUS_CODE  **StatusCode
   );
 

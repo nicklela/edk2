@@ -88,9 +88,9 @@ typedef  VOID  *REDFISH_PAYLOAD;
 /// Library class public structures/unions
 ///
 typedef struct {
-  UINTN                   HeaderCount;
-  EFI_HTTP_HEADER         *Headers;
-  CONST CHAR8             *Context;
+  UINTN              HeaderCount;
+  EFI_HTTP_HEADER    *Headers;
+  CONST CHAR8        *Context;
 } REDFISH_REQUEST;
 
 typedef struct {
@@ -401,6 +401,49 @@ RedfishPatchToUri (
   );
 
 /**
+  Use HTTP PATCH to perform updates on pre-existing Redfish resource.
+
+  This function uses the RedfishService to patch a Redfish resource addressed by
+  Uri (only the relative path is required). Changes to one or more properties within
+  the target resource are represented in the input Content, properties not specified
+  in Content won't be changed by this request. The corresponding redfish response will
+  returned, including HTTP StatusCode, Headers and Payload which record any HTTP response
+  messages.
+
+  Callers are responsible for freeing the HTTP StatusCode, Headers and Payload returned in
+  redfish response data.
+
+  @param[in]    RedfishService        The Service to access the Redfish resources.
+  @param[in]    Uri                   Relative path to address the resource.
+  @param[in]    Content               JSON represented properties to be update.
+  @param[in]    ContentSize           Size of the Content to be send to Redfish service. This is optional.
+  @param[in]    ContentType           Type of the Content to be send to Redfish service. This is optional.
+  @param[out]   RedResponse           Pointer to the Redfish response data.
+
+  @retval EFI_SUCCESS             The operation is successful, indicates the HTTP StatusCode is not
+                                  NULL and the value is 2XX. The Redfish resource will be returned
+                                  in Payload within RedResponse if server send it back in the HTTP
+                                  response message body.
+  @retval EFI_INVALID_PARAMETER   RedfishService, Uri, Content, or RedResponse is NULL.
+  @retval EFI_DEVICE_ERROR        An unexpected system or network error occurred. Callers can get
+                                  more error info from returned HTTP StatusCode, Headers and Payload
+                                  within RedResponse:
+                                  1. If the returned StatusCode is NULL, indicates any error happen.
+                                  2. If the returned StatusCode is not NULL and the value is not 2XX,
+                                     indicates any error happen.
+**/
+EFI_STATUS
+EFIAPI
+RedfishPatchToUriEx (
+  IN     REDFISH_SERVICE   RedfishService,
+  IN     CONST CHAR8       *Uri,
+  IN     CONST CHAR8       *Content,
+  IN     UINTN             ContentSize OPTIONAL,
+  IN     CONST CHAR8       *ContentType OPTIONAL,
+  OUT    REDFISH_RESPONSE  *RedResponse
+  );
+
+/**
   Use HTTP PATCH to perform updates on target payload. Patch to odata.id in Payload directly.
 
   This function uses the Payload to patch the Target. Changes to one or more properties
@@ -581,6 +624,47 @@ RedfishDeleteByUriEx (
   IN     REDFISH_SERVICE   RedfishService,
   IN     CONST CHAR8       *Uri,
   IN     CONST CHAR8       *Content,
+  OUT    REDFISH_RESPONSE  *RedResponse
+  );
+
+/**
+  Use HTTP DELETE to remove a resource.
+
+  This function uses the RedfishService to remove a Redfish resource which is addressed
+  by input Uri (only the relative path is required). The corresponding redfish response will
+  returned, including HTTP StatusCode, Headers and Payload which record any HTTP response
+  messages.
+
+  Callers are responsible for freeing the HTTP StatusCode, Headers and Payload returned in
+  redfish response data.
+
+  @param[in]    RedfishService        The Service to access the Redfish resources.
+  @param[in]    Uri                   Relative path to address the resource.
+  @param[in]    Content               JSON represented properties to be deleted. This is optional.
+  @param[in]    ContentSize           Size of the Content to be send to Redfish service. This is optional.
+  @param[in]    ContentType           Type of the Content to be send to Redfish service. THis is optional.
+  @param[out]   RedResponse           Pointer to the Redfish response data.
+
+  @retval EFI_SUCCESS             The operation is successful, indicates the HTTP StatusCode is not
+                                  NULL and the value is 2XX, the Redfish resource has been removed.
+                                  If there is any message returned from server, it will be returned
+                                  in Payload within RedResponse.
+  @retval EFI_INVALID_PARAMETER   RedfishService, Uri, or RedResponse is NULL.
+  @retval EFI_DEVICE_ERROR        An unexpected system or network error occurred. Callers can get
+                                  more error info from returned HTTP StatusCode, Headers and Payload
+                                  within RedResponse:
+                                  1. If the returned StatusCode is NULL, indicates any error happen.
+                                  2. If the returned StatusCode is not NULL and the value is not 2XX,
+                                     indicates any error happen.
+**/
+EFI_STATUS
+EFIAPI
+RedfishDeleteByUriEx2 (
+  IN     REDFISH_SERVICE   RedfishService,
+  IN     CONST CHAR8       *Uri,
+  IN     CONST CHAR8       *Content OPTIONAL,
+  IN     UINTN             ContentSize OPTIONAL,
+  IN     CONST CHAR8       *ContentType OPTIONAL,
   OUT    REDFISH_RESPONSE  *RedResponse
   );
 
