@@ -10,7 +10,7 @@
 
   Copyright (c) 2019, Intel Corporation. All rights reserved.<BR>
   (C) Copyright 2021 Hewlett Packard Enterprise Development LP<BR>
-  Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+  Copyright (c) 2023-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
@@ -431,6 +431,317 @@ cloneHttpHeaders (
   return Buffer;
 }
 
+EFI_HTTP_MESSAGE *
+BuildRequestMsg (
+  redfishService       *Service,
+  const char           *Uri,
+  EFI_HTTP_METHOD      Method,
+  REDFISH_HTTP_HEADER  *RequestHeader OPTIONAL,
+  size_t               ContentLength OPTIONAL,
+  const char           *ContentType OPTIONAL,
+  const char           *Content OPTIONAL,
+  BOOLEAN              DoContentEncoding
+  )
+{
+  EFI_STATUS             Status;
+  char                   *Url;
+  UINTN                  Index;
+  EFI_HTTP_MESSAGE       *RequestMsg;
+  EFI_HTTP_REQUEST_DATA  *RequestData;
+  UINTN                  HeaderCount;
+  HTTP_IO_HEADER         *HttpIoHeader;
+  CHAR8                  ContentLengthStr[80];
+  CHAR8                  *EncodedContent;
+  UINTN                  EncodedContentLen;
+  BOOLEAN                HasContent;
+
+  RequestMsg        = NULL;
+  RequestData       = NULL;
+  Url               = NULL;
+  HttpIoHeader      = NULL;
+  EncodedContent    = NULL;
+  EncodedContentLen = 0;
+  HeaderCount       = 5;
+  HasContent        = FALSE;
+
+  if ((Service == NULL) || (Uri == NULL) || (Uri[0] == '\0')) {
+    return NULL;
+  }
+
+  if (Method >= HttpMethodMax) {
+    return NULL;
+  }
+
+  Url = makeUrlForService (Service, Uri);
+  if (Url == NULL) {
+    return NULL;
+  }
+
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, Url));
+
+  //
+  // Step 1: build the HTTP headers.
+  //
+  if (Service->sessionToken || Service->basicAuthStr) {
+    HeaderCount++;
+  }
+
+  if ((RequestHeader != NULL) && (RequestHeader->HeaderCount > 0)) {
+    HeaderCount += RequestHeader->HeaderCount;
+  }
+
+  if ((Content != NULL) && (Content[0] != '\0')) {
+    HeaderCount += 2;
+    HasContent   = TRUE;
+    if (DoContentEncoding) {
+      HeaderCount += 2;
+    }
+  }
+
+  HttpIoHeader = HttpIoCreateHeader (HeaderCount);
+  if (HttpIoHeader == NULL) {
+    goto ON_ERROR;
+  }
+
+  if (Service->sessionToken) {
+    Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_X_AUTH_TOKEN, Service->sessionToken);
+    if (EFI_ERROR (Status)) {
+      goto ON_ERROR;
+    }
+  } else if (Service->basicAuthStr) {
+    Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_AUTHORIZATION, Service->basicAuthStr);
+    if (EFI_ERROR (Status)) {
+      goto ON_ERROR;
+    }
+  }
+
+  for (Index = 0; Index < RequestHeader->HeaderCount; Index++) {
+    Status = HttpIoSetHeader (HttpIoHeader, RequestHeader->Headers[Index].FieldName, RequestHeader->Headers[Index].FieldValue);
+    if (EFI_ERROR (Status)) {
+      goto ON_ERROR;
+    }
+  }
+
+  Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_HOST, Service->HostHeaderValue);
+  if (EFI_ERROR (Status)) {
+    goto ON_ERROR;
+  }
+
+  Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
+  if (EFI_ERROR (Status)) {
+    goto ON_ERROR;
+  }
+
+  Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_ACCEPT, HTTP_CONTENT_TYPE_APP_JSON);
+  if (EFI_ERROR (Status)) {
+    goto ON_ERROR;
+  }
+
+  Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_USER_AGENT, "libredfish");
+  if (EFI_ERROR (Status)) {
+    goto ON_ERROR;
+  }
+
+  Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
+  if (EFI_ERROR (Status)) {
+    goto ON_ERROR;
+  }
+
+  //
+  // Handle content header
+  //
+  if (HasContent) {
+    if (ContentType == NULL) {
+      Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_CONTENT_TYPE, HTTP_CONTENT_TYPE_APP_JSON);
+      if (EFI_ERROR (Status)) {
+        goto ON_ERROR;
+      }
+    } else {
+      Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_CONTENT_TYPE, (CHAR8 *)ContentType);
+      if (EFI_ERROR (Status)) {
+        goto ON_ERROR;
+      }
+    }
+
+    if (ContentLength == 0) {
+      ContentLength =  strlen (Content);
+    }
+
+    AsciiSPrint (
+      ContentLengthStr,
+      sizeof (ContentLengthStr),
+      "%lu",
+      (UINT64)ContentLength
+      );
+    Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_CONTENT_LENGTH, ContentLengthStr);
+    if (EFI_ERROR (Status)) {
+      goto ON_ERROR;
+    }
+
+    //
+    // Encoding
+    //
+    if (DoContentEncoding) {
+      EncodedContent    = (CHAR8 *)Content;
+      EncodedContentLen = ContentLength;
+      //
+      // We currently only support gzip Content-Encoding.
+      //
+      Status = EncodeRequestContent ((CHAR8 *)HTTP_CONTENT_ENCODING_GZIP, (CHAR8 *)Content, (VOID **)&EncodedContent, &EncodedContentLen);
+      if (Status == EFI_INVALID_PARAMETER) {
+        DEBUG ((DEBUG_ERROR, "%a: Error to encode content.\n", __func__));
+        goto ON_ERROR;
+      } else if (Status == EFI_UNSUPPORTED) {
+        DEBUG ((DEBUG_MANAGEABILITY, "No content coding for %a! Use raw data instead.\n", HTTP_CONTENT_ENCODING_GZIP));
+        Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_CONTENT_ENCODING, HTTP_CONTENT_ENCODING_IDENTITY);
+        if (EFI_ERROR (Status)) {
+          goto ON_ERROR;
+        }
+      } else {
+        Status = HttpIoSetHeader (HttpIoHeader, HTTP_HEADER_CONTENT_ENCODING, HTTP_CONTENT_ENCODING_GZIP);
+        if (EFI_ERROR (Status)) {
+          goto ON_ERROR;
+        }
+      }
+    }
+  }
+
+  //
+  // Step 2: build the rest of HTTP request info.
+  //
+  RequestData = AllocateZeroPool (sizeof (EFI_HTTP_REQUEST_DATA));
+  if (RequestData == NULL) {
+    goto ON_ERROR;
+  }
+
+  RequestData->Method = Method;
+  RequestData->Url    = C8ToC16 (Url);
+
+  //
+  // Step 3: fill in EFI_HTTP_MESSAGE
+  //
+  RequestMsg = AllocateZeroPool (sizeof (EFI_HTTP_MESSAGE));
+  if (RequestMsg == NULL) {
+    goto ON_ERROR;
+  }
+
+  RequestMsg->Data.Request = RequestData;
+  RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
+  RequestMsg->Headers      = HttpIoHeader->Headers;
+
+  if (HasContent) {
+    RequestMsg->BodyLength = (DoContentEncoding ? EncodedContentLen : ContentLength);
+    RequestMsg->Body       = (VOID *)(DoContentEncoding ? EncodedContent : Content);
+  }
+
+  return RequestMsg;
+
+ON_ERROR:
+
+  if (HttpIoHeader != NULL) {
+    HttpIoFreeHeader (HttpIoHeader);
+  }
+
+  if (RequestData != NULL) {
+    FreePool (RequestData);
+  }
+
+  if (RequestMsg != NULL) {
+    FreePool (RequestMsg);
+  }
+
+  return NULL;
+}
+
+json_t *
+ParseResponseMsg (
+  EFI_HTTP_MESSAGE      *ResponseMsg,
+  EFI_HTTP_STATUS_CODE  **StatusCode,
+  EFI_HTTP_HEADER       **Headers OPTIONAL,
+  UINTN                 *HeaderCount OPTIONAL
+  )
+{
+  EFI_STATUS       Status;
+  json_t           *Data;
+  EFI_HTTP_HEADER  *ContentEncodedHeader;
+
+  if ((ResponseMsg == NULL) || (StatusCode == NULL)) {
+    return NULL;
+  }
+
+  if (((Headers != NULL) && (HeaderCount == NULL))) {
+    return NULL;
+  }
+
+  //
+  // Initialization
+  //
+  Data        = NULL;
+  *StatusCode = NULL;
+  if (Headers != NULL) {
+    *Headers     = NULL;
+    *HeaderCount = 0;
+  }
+
+  //
+  // Return the HTTP StatusCode.
+  //
+  if (ResponseMsg->Data.Response != NULL) {
+    *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
+    if (*StatusCode == NULL) {
+      goto ON_ERROR;
+    }
+
+    //
+    // The caller shall take the responsibility to free the buffer.
+    //
+    **StatusCode = ResponseMsg->Data.Response->StatusCode;
+  }
+
+  //
+  // Return the HTTP headers.
+  //
+  if ((ResponseMsg->Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
+    *Headers = cloneHttpHeaders (ResponseMsg, HeaderCount);
+  }
+
+  //
+  // Return the HTTP body.
+  //
+  if ((ResponseMsg->BodyLength != 0) && (ResponseMsg->Body != NULL)) {
+    //
+    // Check if data is encoded.
+    //
+    ContentEncodedHeader = HttpFindHeader (ResponseMsg->HeaderCount, ResponseMsg->Headers, HTTP_HEADER_CONTENT_ENCODING);
+    if (ContentEncodedHeader != NULL) {
+      //
+      // The content is encoded.
+      //
+      Status = DecodeResponseContent (ContentEncodedHeader->FieldValue, &ResponseMsg->Body, &ResponseMsg->BodyLength);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "%a: Failed to decompress the response content %r\n.", __func__, Status));
+        goto ON_ERROR;
+      }
+    }
+
+    Data = json_loadb (ResponseMsg->Body, ResponseMsg->BodyLength, 0, NULL);
+  }
+
+  return Data;
+
+ON_ERROR:
+
+  if (*StatusCode != NULL) {
+    FreePool (*StatusCode);
+  }
+
+  if ((Headers != NULL) && (*Headers != NULL)) {
+    HttpFreeHeaderFields (*Headers, *HeaderCount);
+  }
+
+  return NULL;
+}
+
 json_t *
 getUriFromServiceEx (
   redfishService        *service,
@@ -440,189 +751,43 @@ getUriFromServiceEx (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  char                   *url;
-  json_t                 *ret;
-  HTTP_IO_HEADER         *HttpIoHeader = NULL;
-  EFI_STATUS             Status;
-  EFI_HTTP_REQUEST_DATA  *RequestData = NULL;
-  EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
-  EFI_HTTP_MESSAGE       ResponseMsg;
-  EFI_HTTP_HEADER        *ContentEncodedHeader;
-  UINTN                  Index, HeaderCount;
-
-  HeaderCount = 5;
+  json_t            *ret;
+  EFI_STATUS        Status;
+  EFI_HTTP_MESSAGE  *RequestMsg;
+  EFI_HTTP_MESSAGE  ResponseMsg;
 
   if ((service == NULL) || (uri == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
-  *StatusCode = NULL;
-  if (ResponseHeader != NULL) {
-    ResponseHeader->HeaderCount = 0;
-    ResponseHeader->Headers     = NULL;
-  }
-
-  url = makeUrlForService (service, uri);
-  if (!url) {
-    return NULL;
-  }
-
-  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
-
-  //
-  // Step 1: Create HTTP request message:
-  //
-  if (service->sessionToken || service->basicAuthStr) {
-    HeaderCount++;
-  }
-
-  if (RequestHeader->HeaderCount) {
-    HeaderCount += RequestHeader->HeaderCount;
-  }
-
-  HttpIoHeader = HttpIoCreateHeader (HeaderCount);
-  if (HttpIoHeader == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  if (service->sessionToken) {
-    Status = HttpIoSetHeader (HttpIoHeader, "X-Auth-Token", service->sessionToken);
-    ASSERT_EFI_ERROR (Status);
-  } else if (service->basicAuthStr) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Authorization", service->basicAuthStr);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  for (Index = 0; Index < RequestHeader->HeaderCount; Index++) {
-    Status = HttpIoSetHeader (HttpIoHeader, RequestHeader->Headers[Index].FieldName, RequestHeader->Headers[Index].FieldValue);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Accept", "application/json");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "User-Agent", "libredfish");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
-  ASSERT_EFI_ERROR (Status);
-
-  //
-  // Step 2: build the rest of HTTP request info.
-  //
-  RequestData = AllocateZeroPool (sizeof (EFI_HTTP_REQUEST_DATA));
-  if (RequestData == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  RequestData->Method = HttpMethodGet;
-  RequestData->Url    = C8ToC16 (url);
-
-  //
-  // Step 3: fill in EFI_HTTP_MESSAGE
-  //
-  RequestMsg = AllocateZeroPool (sizeof (EFI_HTTP_MESSAGE));
-  if (RequestMsg == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  RequestMsg->Data.Request = RequestData;
-  RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
-  RequestMsg->Headers      = HttpIoHeader->Headers;
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, uri));
 
   ZeroMem (&ResponseMsg, sizeof (ResponseMsg));
 
+  RequestMsg = BuildRequestMsg (service, uri, HttpMethodGet, RequestHeader, 0, NULL, NULL, PcdGetBool (PcdRedfishServiceContentEncoding));
+  if (RequestMsg == NULL) {
+    DEBUG ((DEBUG_ERROR, "%a: cannot build request message for %a\n", __func__, uri));
+    return NULL;
+  }
+
   //
-  // Step 4: call RESTEx to get response from REST service.
+  // call RESTEx to get response from REST service.
   //
   Status = service->RestEx->SendReceive (service->RestEx, RequestMsg, &ResponseMsg);
   if (EFI_ERROR (Status)) {
-    ret = NULL;
-
-    //
-    // Deliver status code to caller when error happens so caller can do error handling.
-    //
-    if (ResponseMsg.Data.Response != NULL) {
-      *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
-      if (*StatusCode == NULL) {
-        ret = NULL;
-        goto ON_EXIT;
-      }
-
-      //
-      // The caller shall take the responsibility to free the buffer.
-      //
-      **StatusCode = ResponseMsg.Data.Response->StatusCode;
-    }
-
-    goto ON_EXIT;
+    DEBUG ((DEBUG_ERROR, "%a: %a SendReceive failure: %r\n", __func__, uri, Status));
   }
 
   //
-  // Step 5: Return the HTTP StatusCode and Body message.
+  // Return status code, headers and payload to caller as much as possible.
   //
-  if (ResponseMsg.Data.Response != NULL) {
-    *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
-    if (*StatusCode == NULL) {
-      ret = NULL;
-      goto ON_EXIT;
-    }
+  ret = ParseResponseMsg (&ResponseMsg, StatusCode, (ResponseHeader == NULL ? NULL : &ResponseHeader->Headers), (ResponseHeader == NULL ? NULL : &ResponseHeader->HeaderCount));
 
-    //
-    // The caller shall take the responsibility to free the buffer.
-    //
-    **StatusCode = ResponseMsg.Data.Response->StatusCode;
-  }
-
-  if ((ResponseMsg.Headers != NULL) && (ResponseHeader != NULL)) {
-    ResponseHeader->Headers = cloneHttpHeaders (&ResponseMsg, &ResponseHeader->HeaderCount);
-  }
-
-  if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
-    //
-    // Check if data is encoded.
-    //
-    ContentEncodedHeader = HttpFindHeader (ResponseMsg.HeaderCount, ResponseMsg.Headers, HTTP_HEADER_CONTENT_ENCODING);
-    if (ContentEncodedHeader != NULL) {
-      //
-      // The content is encoded.
-      //
-      Status = DecodeResponseContent (ContentEncodedHeader->FieldValue, &ResponseMsg.Body, &ResponseMsg.BodyLength);
-      if (EFI_ERROR (Status)) {
-        DEBUG ((DEBUG_ERROR, "%a: Failed to decompress the response content %r\n.", __func__, Status));
-        ret = NULL;
-        goto ON_EXIT;
-      }
-    }
-
-    ret = json_loadb (ResponseMsg.Body, ResponseMsg.BodyLength, 0, NULL);
-  } else {
-    //
-    // There is no message body returned from server.
-    //
-    ret = NULL;
-  }
-
-ON_EXIT:
-  if (url != NULL) {
-    free (url);
-  }
-
-  if (HttpIoHeader != NULL) {
-    HttpIoFreeHeader (HttpIoHeader);
-  }
-
-  if (RequestData != NULL) {
-    RestConfigFreeHttpRequestData (RequestData);
-  }
-
+  //
+  // Release resources
+  //
   if (RequestMsg != NULL) {
-    FreePool (RequestMsg);
+    RestConfigFreeHttpMessage (RequestMsg, TRUE);
   }
 
   RestConfigFreeHttpMessage (&ResponseMsg, FALSE);
@@ -642,188 +807,41 @@ putUriFromServiceEx (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  char                   *url;
-  json_t                 *ret;
-  HTTP_IO_HEADER         *HttpIoHeader = NULL;
-  EFI_STATUS             Status;
-  EFI_HTTP_REQUEST_DATA  *RequestData = NULL;
-  EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
-  EFI_HTTP_MESSAGE       ResponseMsg;
-  CHAR8                  ContentLengthStr[80];
-  CHAR8                  *EncodedContent;
-  UINTN                  EncodedContentLen;
+  json_t            *ret;
+  EFI_STATUS        Status;
+  EFI_HTTP_MESSAGE  *RequestMsg;
+  EFI_HTTP_MESSAGE  ResponseMsg;
 
   if ((service == NULL) || (uri == NULL) || (content == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
-  *StatusCode = NULL;
-  if (HeaderCount != NULL) {
-    *HeaderCount = 0;
-  }
-
-  if (Headers != NULL) {
-    *Headers = NULL;
-  }
-
-  url = makeUrlForService (service, uri);
-  if (url == NULL) {
-    return NULL;
-  }
-
-  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
-
-  if (contentLength == 0) {
-    contentLength = strlen (content);
-  }
-
-  //
-  // Step 1: Create HTTP request message:
-  //
-  HttpIoHeader = HttpIoCreateHeader ((service->sessionToken != NULL || service->basicAuthStr != NULL) ? 9 : 8);
-  if (HttpIoHeader == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  if (service->sessionToken) {
-    Status = HttpIoSetHeader (HttpIoHeader, "X-Auth-Token", service->sessionToken);
-    ASSERT_EFI_ERROR (Status);
-  } else if (service->basicAuthStr) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Authorization", service->basicAuthStr);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  if (contentType == NULL) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", (CHAR8 *)contentType);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Accept", "application/json");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "User-Agent", "libredfish");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
-  ASSERT_EFI_ERROR (Status);
-
-  AsciiSPrint (
-    ContentLengthStr,
-    sizeof (ContentLengthStr),
-    "%lu",
-    (UINT64)contentLength
-    );
-  Status = HttpIoSetHeader (HttpIoHeader, "Content-Length", ContentLengthStr);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
-  ASSERT_EFI_ERROR (Status);
-
-  //
-  // Step 2: build the rest of HTTP request info.
-  //
-  RequestData = AllocateZeroPool (sizeof (EFI_HTTP_REQUEST_DATA));
-  if (RequestData == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  RequestData->Method = HttpMethodPut;
-  RequestData->Url    = C8ToC16 (url);
-
-  //
-  // Step 3: fill in EFI_HTTP_MESSAGE
-  //
-  RequestMsg = AllocateZeroPool (sizeof (EFI_HTTP_MESSAGE));
-  if (RequestMsg == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  EncodedContent    = (CHAR8 *)content;
-  EncodedContentLen = contentLength;
-  //
-  // We currently only support gzip Content-Encoding.
-  //
-  Status = EncodeRequestContent ((CHAR8 *)HTTP_CONTENT_ENCODING_GZIP, (CHAR8 *)content, (VOID **)&EncodedContent, &EncodedContentLen);
-  if (Status == EFI_INVALID_PARAMETER) {
-    DEBUG ((DEBUG_ERROR, "%a: Error to encode content.\n", __func__));
-    ret = NULL;
-    goto ON_EXIT;
-  } else if (Status == EFI_UNSUPPORTED) {
-    DEBUG ((DEBUG_MANAGEABILITY, "No content coding for %a! Use raw data instead.\n", HTTP_CONTENT_ENCODING_GZIP));
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_IDENTITY);
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_GZIP);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  RequestMsg->Data.Request = RequestData;
-  RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
-  RequestMsg->Headers      = HttpIoHeader->Headers;
-  RequestMsg->BodyLength   = EncodedContentLen;
-  RequestMsg->Body         = (VOID *)EncodedContent;
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, uri));
 
   ZeroMem (&ResponseMsg, sizeof (ResponseMsg));
 
+  RequestMsg = BuildRequestMsg (service, uri, HttpMethodPut, NULL, contentLength, contentType, content, PcdGetBool (PcdRedfishServiceContentEncoding));
+  if (RequestMsg == NULL) {
+    DEBUG ((DEBUG_ERROR, "%a: cannot build request message for %a\n", __func__, uri));
+    return NULL;
+  }
+
   //
-  // Step 4: call RESTEx to get response from REST service.
+  // call RESTEx to get response from REST service.
   //
   Status = service->RestEx->SendReceive (service->RestEx, RequestMsg, &ResponseMsg);
   if (EFI_ERROR (Status)) {
-    ret = NULL;
-    goto ON_EXIT;
+    DEBUG ((DEBUG_ERROR, "%a: %a SendReceive failure: %r\n", __func__, uri, Status));
   }
 
   //
-  // Step 5: Return the HTTP StatusCode and Body message.
+  // Return status code, headers and payload to caller as much as possible.
   //
-  if (ResponseMsg.Data.Response != NULL) {
-    *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
-    if (*StatusCode == NULL) {
-      ret = NULL;
-      goto ON_EXIT;
-    }
+  ret = ParseResponseMsg (&ResponseMsg, StatusCode, Headers, HeaderCount);
 
-    //
-    // The caller shall take the responsibility to free the buffer.
-    //
-    **StatusCode = ResponseMsg.Data.Response->StatusCode;
-  }
-
-  if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
-    *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
-  }
-
-  if (EncodedContent != content) {
-    FreePool (EncodedContent);
-  }
-
-  if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
-    ret = json_loadb (ResponseMsg.Body, ResponseMsg.BodyLength, 0, NULL);
-  } else {
-    //
-    // There is no message body returned from server.
-    //
-    ret = NULL;
-  }
-
-ON_EXIT:
-  if (url != NULL) {
-    free (url);
-  }
-
-  if (HttpIoHeader != NULL) {
-    HttpIoFreeHeader (HttpIoHeader);
-  }
-
-  if (RequestData != NULL) {
-    RestConfigFreeHttpRequestData (RequestData);
-  }
+  //
+  // Release resources
+  //
 
   if (RequestMsg != NULL) {
     FreePool (RequestMsg);
@@ -846,188 +864,41 @@ patchUriFromServiceEx (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  char                   *url;
-  json_t                 *ret;
-  HTTP_IO_HEADER         *HttpIoHeader = NULL;
-  EFI_STATUS             Status;
-  EFI_HTTP_REQUEST_DATA  *RequestData = NULL;
-  EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
-  EFI_HTTP_MESSAGE       ResponseMsg;
-  CHAR8                  ContentLengthStr[80];
-  CHAR8                  *EncodedContent;
-  UINTN                  EncodedContentLen;
+  json_t            *ret;
+  EFI_STATUS        Status;
+  EFI_HTTP_MESSAGE  *RequestMsg;
+  EFI_HTTP_MESSAGE  ResponseMsg;
 
   if ((service == NULL) || (uri == NULL) || (content == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
-  *StatusCode = NULL;
-  if (HeaderCount != NULL) {
-    *HeaderCount = 0;
-  }
-
-  if (Headers != NULL) {
-    *Headers = NULL;
-  }
-
-  url = makeUrlForService (service, uri);
-  if (!url) {
-    return NULL;
-  }
-
-  if (contentLength == 0) {
-    contentLength = strlen (content);
-  }
-
-  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
-
-  //
-  // Step 1: Create HTTP request message:
-  //
-  HttpIoHeader = HttpIoCreateHeader ((service->sessionToken || service->basicAuthStr) ? 9 : 8);
-  if (HttpIoHeader == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  if (service->sessionToken) {
-    Status = HttpIoSetHeader (HttpIoHeader, "X-Auth-Token", service->sessionToken);
-    ASSERT_EFI_ERROR (Status);
-  } else if (service->basicAuthStr) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Authorization", service->basicAuthStr);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  if (contentType == NULL) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", (CHAR8 *)contentType);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Accept", "application/json");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "User-Agent", "libredfish");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
-  ASSERT_EFI_ERROR (Status);
-
-  AsciiSPrint (
-    ContentLengthStr,
-    sizeof (ContentLengthStr),
-    "%lu",
-    (UINT64)strlen (content)
-    );
-  Status = HttpIoSetHeader (HttpIoHeader, "Content-Length", ContentLengthStr);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
-  ASSERT_EFI_ERROR (Status);
-
-  //
-  // Step 2: build the rest of HTTP request info.
-  //
-  RequestData = AllocateZeroPool (sizeof (EFI_HTTP_REQUEST_DATA));
-  if (RequestData == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  RequestData->Method = HttpMethodPatch;
-  RequestData->Url    = C8ToC16 (url);
-
-  //
-  // Step 3: fill in EFI_HTTP_MESSAGE
-  //
-  RequestMsg = AllocateZeroPool (sizeof (EFI_HTTP_MESSAGE));
-  if (RequestMsg == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  EncodedContent    = (CHAR8 *)content;
-  EncodedContentLen = strlen (content);
-  //
-  // We currently only support gzip Content-Encoding.
-  //
-  Status = EncodeRequestContent ((CHAR8 *)HTTP_CONTENT_ENCODING_GZIP, (CHAR8 *)content, (VOID **)&EncodedContent, &EncodedContentLen);
-  if (Status == EFI_INVALID_PARAMETER) {
-    DEBUG ((DEBUG_ERROR, "%a: Error to encode content.\n", __func__));
-    ret = NULL;
-    goto ON_EXIT;
-  } else if (Status == EFI_UNSUPPORTED) {
-    DEBUG ((DEBUG_MANAGEABILITY, "No content coding for %a! Use raw data instead.\n", HTTP_CONTENT_ENCODING_GZIP));
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_IDENTITY);
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_GZIP);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  RequestMsg->Data.Request = RequestData;
-  RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
-  RequestMsg->Headers      = HttpIoHeader->Headers;
-  RequestMsg->BodyLength   = EncodedContentLen;
-  RequestMsg->Body         = (VOID *)EncodedContent;
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, uri));
 
   ZeroMem (&ResponseMsg, sizeof (ResponseMsg));
 
+  RequestMsg = BuildRequestMsg (service, uri, HttpMethodPatch, NULL, contentLength, contentType, content, PcdGetBool (PcdRedfishServiceContentEncoding));
+  if (RequestMsg == NULL) {
+    DEBUG ((DEBUG_ERROR, "%a: cannot build request message for %a\n", __func__, uri));
+    return NULL;
+  }
+
   //
-  // Step 4: call RESTEx to get response from REST service.
+  // call RESTEx to get response from REST service.
   //
   Status = service->RestEx->SendReceive (service->RestEx, RequestMsg, &ResponseMsg);
   if (EFI_ERROR (Status)) {
-    ret = NULL;
-    goto ON_EXIT;
+    DEBUG ((DEBUG_ERROR, "%a: %a SendReceive failure: %r\n", __func__, uri, Status));
   }
 
   //
-  // Step 5: Return the HTTP StatusCode and Body message.
+  // Return status code, headers and payload to caller as much as possible.
   //
-  if (ResponseMsg.Data.Response != NULL) {
-    *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
-    if (*StatusCode == NULL) {
-      ret = NULL;
-      goto ON_EXIT;
-    }
+  ret = ParseResponseMsg (&ResponseMsg, StatusCode, Headers, HeaderCount);
 
-    //
-    // The caller shall take the responsibility to free the buffer.
-    //
-    **StatusCode = ResponseMsg.Data.Response->StatusCode;
-  }
-
-  if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
-    *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
-  }
-
-  if (EncodedContent != content) {
-    FreePool (EncodedContent);
-  }
-
-  if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
-    ret = json_loadb (ResponseMsg.Body, ResponseMsg.BodyLength, 0, NULL);
-  } else {
-    //
-    // There is no message body returned from server.
-    //
-    ret = NULL;
-  }
-
-ON_EXIT:
-  if (url != NULL) {
-    free (url);
-  }
-
-  if (HttpIoHeader != NULL) {
-    HttpIoFreeHeader (HttpIoHeader);
-  }
-
-  if (RequestData != NULL) {
-    RestConfigFreeHttpRequestData (RequestData);
-  }
+  //
+  // Release resources
+  //
 
   if (RequestMsg != NULL) {
     FreePool (RequestMsg);
@@ -1050,202 +921,59 @@ postUriFromServiceEx (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  char                   *url = NULL;
-  json_t                 *ret;
-  HTTP_IO_HEADER         *HttpIoHeader = NULL;
-  EFI_STATUS             Status;
-  EFI_HTTP_REQUEST_DATA  *RequestData = NULL;
-  EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
-  EFI_HTTP_MESSAGE       ResponseMsg;
-  CHAR8                  ContentLengthStr[80];
-  EFI_HTTP_HEADER        *HttpHeader = NULL;
-  CHAR8                  *EncodedContent;
-  UINTN                  EncodedContentLen;
-
-  ret = NULL;
+  json_t            *ret;
+  EFI_STATUS        Status;
+  EFI_HTTP_MESSAGE  *RequestMsg;
+  EFI_HTTP_MESSAGE  ResponseMsg;
+  EFI_HTTP_HEADER   *XAuthTokenHeader;
 
   if ((service == NULL) || (uri == NULL) || (content == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
-  *StatusCode = NULL;
-  if (HeaderCount != NULL) {
-    *HeaderCount = 0;
-  }
-
-  if (Headers != NULL) {
-    *Headers = NULL;
-  }
-
-  url = makeUrlForService (service, uri);
-  if (!url) {
-    return NULL;
-  }
-
-  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
-
-  if (contentLength == 0) {
-    contentLength = strlen (content);
-  }
-
-  //
-  // Step 1: Create HTTP request message:
-  //
-  HttpIoHeader = HttpIoCreateHeader ((service->sessionToken || service->basicAuthStr) ? 8 : 7);
-  if (HttpIoHeader == NULL) {
-    goto ON_EXIT;
-  }
-
-  if (service->sessionToken) {
-    Status = HttpIoSetHeader (HttpIoHeader, "X-Auth-Token", service->sessionToken);
-    ASSERT_EFI_ERROR (Status);
-  } else if (service->basicAuthStr) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Authorization", service->basicAuthStr);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  if (contentType == NULL) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", (CHAR8 *)contentType);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Accept", "application/json");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "User-Agent", "libredfish");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
-  ASSERT_EFI_ERROR (Status);
-  AsciiSPrint (
-    ContentLengthStr,
-    sizeof (ContentLengthStr),
-    "%lu",
-    (UINT64)contentLength
-    );
-  Status = HttpIoSetHeader (HttpIoHeader, "Content-Length", ContentLengthStr);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
-  ASSERT_EFI_ERROR (Status);
-
-  //
-  // Step 2: build the rest of HTTP request info.
-  //
-  RequestData = AllocateZeroPool (sizeof (EFI_HTTP_REQUEST_DATA));
-  if (RequestData == NULL) {
-    goto ON_EXIT;
-  }
-
-  RequestData->Method = HttpMethodPost;
-  RequestData->Url    = C8ToC16 (url);
-
-  //
-  // Step 3: fill in EFI_HTTP_MESSAGE
-  //
-  RequestMsg = AllocateZeroPool (sizeof (EFI_HTTP_MESSAGE));
-  if (RequestMsg == NULL) {
-    goto ON_EXIT;
-  }
-
-  EncodedContent    = (CHAR8 *)content;
-  EncodedContentLen = strlen (content);
-  //
-  // We currently only support gzip Content-Encoding.
-  //
-  Status = EncodeRequestContent ((CHAR8 *)HTTP_CONTENT_ENCODING_GZIP, (CHAR8 *)content, (VOID **)&EncodedContent, &EncodedContentLen);
-  if (Status == EFI_INVALID_PARAMETER) {
-    DEBUG ((DEBUG_ERROR, "%a: Error to encode content.\n", __func__));
-    ret = NULL;
-    goto ON_EXIT;
-  } else if (Status == EFI_UNSUPPORTED) {
-    DEBUG ((DEBUG_MANAGEABILITY, "No content coding for %a! Use raw data instead.\n", HTTP_CONTENT_ENCODING_GZIP));
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_IDENTITY);
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Encoding", HTTP_CONTENT_ENCODING_GZIP);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  RequestMsg->Data.Request = RequestData;
-  RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
-  RequestMsg->Headers      = HttpIoHeader->Headers;
-  RequestMsg->BodyLength   = EncodedContentLen;
-  RequestMsg->Body         = (VOID *)EncodedContent;
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, uri));
 
   ZeroMem (&ResponseMsg, sizeof (ResponseMsg));
 
+  RequestMsg = BuildRequestMsg (service, uri, HttpMethodPost, NULL, contentLength, contentType, content, PcdGetBool (PcdRedfishServiceContentEncoding));
+  if (RequestMsg == NULL) {
+    DEBUG ((DEBUG_ERROR, "%a: cannot build request message for %a\n", __func__, uri));
+    return NULL;
+  }
+
   //
-  // Step 4: call RESTEx to get response from REST service.
+  // call RESTEx to get response from REST service.
   //
   Status = service->RestEx->SendReceive (service->RestEx, RequestMsg, &ResponseMsg);
   if (EFI_ERROR (Status)) {
-    //
-    // If there is no response to handle, go to error exit.
-    //
-    if (ResponseMsg.Data.Response == NULL) {
-      goto ON_EXIT;
-    }
+    DEBUG ((DEBUG_ERROR, "%a: %a SendReceive failure: %r\n", __func__, uri, Status));
   }
 
   //
-  // Step 5: Return the HTTP StatusCode and Body message.
+  // Return status code, headers and payload to caller as much as possible.
   //
-  if (ResponseMsg.Data.Response != NULL) {
-    *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
-    if (*StatusCode == NULL) {
-      goto ON_EXIT;
-    }
-
-    //
-    // The caller shall take the responsibility to free the buffer.
-    //
-    **StatusCode = ResponseMsg.Data.Response->StatusCode;
-  }
-
-  if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
-    *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
-  }
-
-  if (EncodedContent != content) {
-    FreePool (EncodedContent);
-  }
-
-  if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
-    ret = json_loadb (ResponseMsg.Body, ResponseMsg.BodyLength, 0, NULL);
-  }
+  ret = ParseResponseMsg (&ResponseMsg, StatusCode, Headers, HeaderCount);
 
   //
-  // Step 6: Parsing the HttpHeader to retrieve the X-Auth-Token if the HTTP StatusCode is correct.
+  // Parsing the HttpHeader to retrieve the X-Auth-Token if the HTTP StatusCode is correct.
   //
   if ((ResponseMsg.Data.Response != NULL) &&
       ((ResponseMsg.Data.Response->StatusCode == HTTP_STATUS_200_OK) ||
        (ResponseMsg.Data.Response->StatusCode == HTTP_STATUS_204_NO_CONTENT)))
   {
-    HttpHeader = HttpFindHeader (ResponseMsg.HeaderCount, ResponseMsg.Headers, "X-Auth-Token");
-    if (HttpHeader != NULL) {
-      if (service->sessionToken) {
+    XAuthTokenHeader = HttpFindHeader (ResponseMsg.HeaderCount, ResponseMsg.Headers, HTTP_HEADER_X_AUTH_TOKEN);
+    if (XAuthTokenHeader != NULL) {
+      if (service->sessionToken != NULL) {
         free (service->sessionToken);
       }
 
-      service->sessionToken = AllocateCopyPool (AsciiStrSize (HttpHeader->FieldValue), HttpHeader->FieldValue);
+      service->sessionToken = AllocateCopyPool (AsciiStrSize (XAuthTokenHeader->FieldValue), XAuthTokenHeader->FieldValue);
     }
   }
 
-ON_EXIT:
-  if (url != NULL) {
-    free (url);
-  }
-
-  if (HttpIoHeader != NULL) {
-    HttpIoFreeHeader (HttpIoHeader);
-  }
-
-  if (RequestData != NULL) {
-    RestConfigFreeHttpRequestData (RequestData);
-  }
+  //
+  // Release resources
+  //
 
   if (RequestMsg != NULL) {
     FreePool (RequestMsg);
@@ -1302,174 +1030,41 @@ deleteUriFromServiceEx (
   EFI_HTTP_STATUS_CODE  **StatusCode
   )
 {
-  char                   *url;
-  json_t                 *ret;
-  HTTP_IO_HEADER         *HttpIoHeader = NULL;
-  EFI_STATUS             Status;
-  EFI_HTTP_REQUEST_DATA  *RequestData = NULL;
-  EFI_HTTP_MESSAGE       *RequestMsg  = NULL;
-  EFI_HTTP_MESSAGE       ResponseMsg;
-  CHAR8                  ContentLengthStr[80];
-  UINTN                  Count;
-
-  ret   = NULL;
-  Count = 0;
+  json_t            *ret;
+  EFI_STATUS        Status;
+  EFI_HTTP_MESSAGE  *RequestMsg;
+  EFI_HTTP_MESSAGE  ResponseMsg;
 
   if ((service == NULL) || (uri == NULL) || (StatusCode == NULL)) {
     return NULL;
   }
 
-  *StatusCode = NULL;
-  if (HeaderCount != NULL) {
-    *HeaderCount = 0;
-  }
-
-  if (Headers != NULL) {
-    *Headers = NULL;
-  }
-
-  url = makeUrlForService (service, uri);
-  if (!url) {
-    return NULL;
-  }
-
-  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, url));
-
-  //
-  // Step 1: Create HTTP request message:
-  //
-  Count = 4;
-  if (((service->sessionToken != NULL) || (service->basicAuthStr != NULL))) {
-    Count += 1;
-  }
-
-  if (content != NULL) {
-    Count += 2;
-  }
-
-  HttpIoHeader = HttpIoCreateHeader (Count);
-  if (HttpIoHeader == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  if (service->sessionToken) {
-    Status = HttpIoSetHeader (HttpIoHeader, "X-Auth-Token", service->sessionToken);
-    ASSERT_EFI_ERROR (Status);
-  } else if (service->basicAuthStr) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Authorization", service->basicAuthStr);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  if (contentType == NULL) {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", "application/json");
-    ASSERT_EFI_ERROR (Status);
-  } else {
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Type", (CHAR8 *)contentType);
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  Status = HttpIoSetHeader (HttpIoHeader, "Host", service->HostHeaderValue);
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "User-Agent", "libredfish");
-  ASSERT_EFI_ERROR (Status);
-  Status = HttpIoSetHeader (HttpIoHeader, "Connection", "Keep-Alive");
-  ASSERT_EFI_ERROR (Status);
-
-  if (content != NULL) {
-    if (contentLength == 0) {
-      contentLength = strlen (content);
-    }
-
-    AsciiSPrint (
-      ContentLengthStr,
-      sizeof (ContentLengthStr),
-      "%lu",
-      (UINT64)contentLength
-      );
-    Status = HttpIoSetHeader (HttpIoHeader, "Content-Length", ContentLengthStr);
-    ASSERT_EFI_ERROR (Status);
-    Status = HttpIoSetHeader (HttpIoHeader, "OData-Version", "4.0");
-    ASSERT_EFI_ERROR (Status);
-  }
-
-  //
-  // Step 2: build the rest of HTTP request info.
-  //
-  RequestData = AllocateZeroPool (sizeof (EFI_HTTP_REQUEST_DATA));
-  if (RequestData == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  RequestData->Method = HttpMethodDelete;
-  RequestData->Url    = C8ToC16 (url);
-
-  //
-  // Step 3: fill in EFI_HTTP_MESSAGE
-  //
-  RequestMsg = AllocateZeroPool (sizeof (EFI_HTTP_MESSAGE));
-  if (RequestMsg == NULL) {
-    ret = NULL;
-    goto ON_EXIT;
-  }
-
-  RequestMsg->Data.Request = RequestData;
-  RequestMsg->HeaderCount  = HttpIoHeader->HeaderCount;
-  RequestMsg->Headers      = HttpIoHeader->Headers;
-
-  if (content != NULL) {
-    RequestMsg->BodyLength = contentLength;
-    RequestMsg->Body       = (VOID *)content;
-  }
+  DEBUG ((DEBUG_MANAGEABILITY, "%a: %a\n", __func__, uri));
 
   ZeroMem (&ResponseMsg, sizeof (ResponseMsg));
 
+  RequestMsg = BuildRequestMsg (service, uri, HttpMethodDelete, NULL, contentLength, contentType, content, PcdGetBool (PcdRedfishServiceContentEncoding));
+  if (RequestMsg == NULL) {
+    DEBUG ((DEBUG_ERROR, "%a: cannot build request message for %a\n", __func__, uri));
+    return NULL;
+  }
+
   //
-  // Step 4: call RESTEx to get response from REST service.
+  // call RESTEx to get response from REST service.
   //
   Status = service->RestEx->SendReceive (service->RestEx, RequestMsg, &ResponseMsg);
   if (EFI_ERROR (Status)) {
-    ret = NULL;
-    goto ON_EXIT;
+    DEBUG ((DEBUG_ERROR, "%a: %a SendReceive failure: %r\n", __func__, uri, Status));
   }
 
   //
-  // Step 5: Return the HTTP StatusCode and Body message.
+  // Return status code, headers and payload to caller as much as possible.
   //
-  if (ResponseMsg.Data.Response != NULL) {
-    *StatusCode = AllocateZeroPool (sizeof (EFI_HTTP_STATUS_CODE));
-    if (*StatusCode == NULL) {
-      ret = NULL;
-      goto ON_EXIT;
-    }
+  ret = ParseResponseMsg (&ResponseMsg, StatusCode, Headers, HeaderCount);
 
-    //
-    // The caller shall take the responsibility to free the buffer.
-    //
-    **StatusCode = ResponseMsg.Data.Response->StatusCode;
-  }
-
-  if ((ResponseMsg.Headers != NULL) && (Headers != NULL) && (HeaderCount != NULL)) {
-    *Headers = cloneHttpHeaders (&ResponseMsg, HeaderCount);
-  }
-
-  if ((ResponseMsg.BodyLength != 0) && (ResponseMsg.Body != NULL)) {
-    ret = json_loadb (ResponseMsg.Body, ResponseMsg.BodyLength, 0, NULL);
-  }
-
-ON_EXIT:
-  if (url != NULL) {
-    free (url);
-  }
-
-  if (HttpIoHeader != NULL) {
-    HttpIoFreeHeader (HttpIoHeader);
-  }
-
-  if (RequestData != NULL) {
-    RestConfigFreeHttpRequestData (RequestData);
-  }
+  //
+  // Release resources
+  //
 
   if (RequestMsg != NULL) {
     FreePool (RequestMsg);
